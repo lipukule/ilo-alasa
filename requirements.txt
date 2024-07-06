@@ -1,2 +1,3 @@
 voyageai
 aiohttp-ratelimiter
+async-lru

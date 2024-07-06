@@ -8,6 +8,7 @@ from pathlib import Path
 import glob
 import heapq
 from aiohttplimiter import default_keyfunc, Limiter
+from async_lru import alru_cache
 
 vo = voyageai.AsyncClient()
 limiter = Limiter(keyfunc=default_keyfunc)
@@ -16,12 +17,11 @@ doc_embeddings = json.loads(Path("./embeddings.json").read_text())
 basenames = json.loads(Path("./basenames.json").read_text())
 contents = [Path(f"./content/{x}.md").read_text() for x in basenames]
 
-@limiter.limit("10/minute")
-async def search(request):
-    query = request.rel_url.query['i']
+@alru_cache(maxsize=200)
+async def query(query):
     total_tokens = vo.count_tokens([query], model="voyage-multilingual-2")
     if total_tokens > 25:
-        return web.Response(status=413)
+        return lambda: web.Response(status=413)
 
     result = await vo.embed([query], model="voyage-multilingual-2", input_type="query")
     query_embedding = result.embeddings[0]
@@ -34,7 +34,13 @@ async def search(request):
 
     reranking = await vo.rerank(query, [contents[idx] for idx in most_similar], model="rerank-lite-1", top_k=5)
 
-    return web.Response(text=json.dumps([most_similar_basenames[item.index] for item in reranking.results]))
+    results = json.dumps([most_similar_basenames[item.index] for item in reranking.results])
+    return lambda: web.Response(text=results)
+
+@limiter.limit("20/minute")
+async def search(request):
+    resp = await query(request.rel_url.query['i'])
+    return resp()
 
 app = web.Application()
 app.add_routes([
